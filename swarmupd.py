@@ -1,3 +1,5 @@
+import pprint
+import traceback
 import docker
 import os
 import sys
@@ -17,6 +19,7 @@ def debug(msg):
 
 def exception(ex):
     print("ERROR: %s" % ex)
+    traceback.print_exc()
 
 
 def exception_service(service, ex):
@@ -210,7 +213,8 @@ def process_configs(service_id):
 
                 if resolution['action'] == 'add':
                     log_service(service, "New config '%s' found" % (resolution['config_name']))
-                    log_service(service, "Add config '%s' at %s" % (resolution['config_name'], resolution['config_path']))
+                    log_service(service,
+                                "Add config '%s' at %s" % (resolution['config_name'], resolution['config_path']))
                     update_service_config(
                         resolution['service'],
                         resolution['remove_config'],
@@ -221,7 +225,8 @@ def process_configs(service_id):
 
                 if resolution['action'] == 'update':
                     log_service(service, "Config '%s' updates found" % (resolution['config_name']))
-                    log_service(service, "Update config '%s' at %s" % (resolution['config_name'], resolution['config_path']))
+                    log_service(service,
+                                "Update config '%s' at %s" % (resolution['config_name'], resolution['config_path']))
                     update_service_config(
                         resolution['service'],
                         resolution['remove_config'],
@@ -240,45 +245,46 @@ def process_configs(service_id):
         debug_service(service, "Label %s.* not found!" % SWARMUP_CONFIG_LABEL)
 
 
+def parse_image_uri(uri):
+
+    image_uri = None
+    image_tag = 'latest'
+    image_sha = None
+
+    if len(uri.split('@')) == 2:
+        image_sha = uri.split('@')[1]
+        uri = uri.split('@')[0]
+
+    if len(uri.split('@')) == 1:
+        image_uri = uri.split(':')[0]
+        if len(uri.split(':')) == 2:
+            image_tag = uri.split(':')[1]
+
+    return [image_uri, image_tag, image_sha]
+
 def process_image(service_id):
     try:
         client = docker.from_env()
         service = client.services.get(service_id)
 
-        service_labels = service.attrs['Spec']['Labels']
+        si_uri, si_tag, si_sha = parse_image_uri(service.attrs['Spec']['TaskTemplate']['ContainerSpec']['Image'])
 
-        label_found = False
+        # Pull new image
+        pull_image = client.images.pull(si_uri, si_tag)
+        pi_uri, pi_tag, pi_sha = parse_image_uri(pull_image.attrs['RepoDigests'][0])
 
-        for label_key, label_value in service_labels.items():
-            if label_key.startswith(SWARMUP_IMAGE_LABEL):
-                label_found = True
-
-        if label_found:
-
-            # Image
-            service_image = service.attrs['Spec']['TaskTemplate']['ContainerSpec']['Image']
-            service_image_with_hash, service_image_sha = service_image.split('@')
-            service_image_uri = service_image_with_hash.split(':')[0]
-            service_image_tag = service_image_with_hash.split(':')[1]
-
-            # Pull new image
-            pull_image = client.images.pull(service_image_uri, service_image_tag)
-            pull_image_uri, pull_image_sha = pull_image.attrs['RepoDigests'][0].split('@')
-
-            # Update image?
-            if service_image_sha != pull_image_sha:
-                image_update_uri = '%s:%s' % (pull_image_uri, service_image_tag)
-                log_service(service, 'Update found!')
-                log_service(service, 'Update image to ' + image_update_uri)
-                update_service_image(service, image_update_uri)
-                log_service(service, 'Updated!')
-            else:
-                log_service(service, 'No image updates found!')
-
-            debug("-" * 100)
-
+        # Update image?
+        if si_sha != pi_sha:
+            image_update_uri = '%s:%s' % (pi_uri, si_tag)
+            log_service(service, 'Update found!')
+            log_service(service, 'Update image to ' + image_update_uri)
+            update_service_image(service, image_update_uri)
+            log_service(service, 'Updated!')
         else:
-            debug_service(service, "Label %s not found!" % SWARMUP_IMAGE_LABEL)
+            log_service(service, 'No image updates found!')
+
+        debug("-" * 100)
+
     except Exception as ex:
         exception(ex)
 
