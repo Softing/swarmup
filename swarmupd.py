@@ -15,6 +15,10 @@ def debug(msg):
         log(msg)
 
 
+def exception(ex):
+    print("ERROR: %s" % ex)
+
+
 def exception_service(service, ex):
     print("ERROR: %s - %s" % (service.name, ex))
 
@@ -237,62 +241,46 @@ def process_configs(service_id):
 
 
 def process_image(service_id):
-    client = docker.from_env()
-    service = client.services.get(service_id)
+    try:
+        client = docker.from_env()
+        service = client.services.get(service_id)
 
-    service_labels = service.attrs['Spec']['Labels']
+        service_labels = service.attrs['Spec']['Labels']
 
-    label_found = False
+        label_found = False
 
-    for label_key, label_value in service_labels.items():
-        if label_key.startswith(SWARMUP_IMAGE_LABEL):
-            label_found = True
+        for label_key, label_value in service_labels.items():
+            if label_key.startswith(SWARMUP_IMAGE_LABEL):
+                label_found = True
 
-    if label_found:
+        if label_found:
 
-        # Image
-        service_image_with_hash = service.attrs['Spec']['TaskTemplate']['ContainerSpec']['Image'].split('@')
+            # Image
+            service_image = service.attrs['Spec']['TaskTemplate']['ContainerSpec']['Image']
+            service_image_with_hash, service_image_sha = service_image.split('@')
+            service_image_uri = service_image_with_hash.split(':')[0]
+            service_image_tag = service_image_with_hash.split(':')[1]
 
-        # Get Image URI and Tag
-        service_image = service_image_with_hash[0]
-        service_image_uri = service_image.split(':')[0]
-        service_image_tag = service_image.split(':')[1]
+            # Pull new image
+            pull_image = client.images.pull(service_image_uri, service_image_tag)
+            pull_image_uri, pull_image_sha = pull_image.attrs['RepoDigests'][0].split('@')
 
-        # Get image SHA
-        service_image_sha = ""
+            # Update image?
+            if service_image_sha != pull_image_sha:
+                image_update_uri = '%s:%s' % (pull_image_uri, service_image_tag)
+                log_service(service, 'Update found!')
+                log_service(service, 'Update image to ' + image_update_uri)
+                update_service_image(service, image_update_uri)
+                log_service(service, 'Updated!')
+            else:
+                log_service(service, 'No image updates found!')
 
-        if len(service_image_with_hash) == 2:
-            service_image_sha = service_image_with_hash[1]
+            debug("-" * 100)
 
-        # log_service(service, "service_image_uri: " + service_image_uri)
-        # log_service(service, "service_image_tag: " + service_image_tag)
-        # log_service(service, "service_image_sha: " + service_image_sha)
-
-        # Pull new image
-        debug_service(service, "Getting information about image updates...")
-
-        try:
-            client.images.pull(service_image_uri, service_image_tag)
-        except Exception as ex:
-            exception_service(service, ex)
-
-        # Get registry image data
-        swarm_image = client.images.get(service_image_uri)
-        swarm_image_uri, swarm_image_sha = swarm_image.attrs['RepoDigests'][0].split('@')
-        swarm_image_update_uri = '%s:%s' % (swarm_image_uri, service_image_tag)
-
-        # Update image?
-        if service_image_sha != swarm_image_sha:
-            log_service(service, 'Update found!')
-            log_service(service, 'Update image to ' + swarm_image_update_uri)
-            update_service_image(service, swarm_image_update_uri)
-            log_service(service, 'Updated!')
         else:
-            log_service(service, 'No image updates found!')
-
-        debug("-" * 100)
-    else:
-        debug_service(service, "Label %s not found!" % SWARMUP_IMAGE_LABEL)
+            debug_service(service, "Label %s not found!" % SWARMUP_IMAGE_LABEL)
+    except Exception as ex:
+        exception(ex)
 
 
 # Common
