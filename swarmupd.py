@@ -240,7 +240,6 @@ def process_image(service_id):
     client = docker.from_env()
     service = client.services.get(service_id)
 
-    service_id = service.id
     service_labels = service.attrs['Spec']['Labels']
 
     label_found = False
@@ -270,7 +269,7 @@ def process_image(service_id):
         # log_service(service, "service_image_sha: " + service_image_sha)
 
         # Pull new image
-        debug(" - Puling latest image...")
+        debug_service(service, "Getting information about image updates...")
 
         try:
             client.images.pull(service_image_uri, service_image_tag)
@@ -280,7 +279,7 @@ def process_image(service_id):
         # Get registry image data
         swarm_image = client.images.get(service_image_uri)
         swarm_image_uri, swarm_image_sha = swarm_image.attrs['RepoDigests'][0].split('@')
-        swarm_image_update_uri = '%s:%s@%s' % (swarm_image_uri, service_image_tag, swarm_image_sha)
+        swarm_image_update_uri = '%s:%s' % (swarm_image_uri, service_image_tag)
 
         # Update image?
         if service_image_sha != swarm_image_sha:
