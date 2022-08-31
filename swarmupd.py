@@ -1,9 +1,9 @@
+import docker
 import os
-import time
 import sys
+import time
 from multiprocessing import Pool
 from subprocess import Popen, PIPE
-import docker
 
 
 def log(msg):
@@ -16,11 +16,11 @@ def debug(msg):
 
 
 def exception_service(service, ex):
-    print("%s: ERROR %s" % (service.name, ex))
+    print("ERROR: %s - %s" % (service.name, ex))
 
 
 def log_service(service, msg):
-    print("%s: %s" % (service.name, msg))
+    print("INFO: %s - %s" % (service.name, msg))
 
 
 def debug_service(service, msg):
@@ -29,34 +29,31 @@ def debug_service(service, msg):
 
 
 def login_to_registry():
-    print("# LOGIN TO DOCKER REGISTRY")
-    print("-" * 100)
-    print("")
-
     if SWARMUP_REGISTRY_USER and SWARMUP_REGISTRY_PASSWORD:
 
         command = ["docker", "login"]
 
         if SWARMUP_REGISTRY_URL:
             command.append(SWARMUP_REGISTRY_URL)
-            print(" - URL %s" % SWARMUP_REGISTRY_URL)
+            print("Registry: '%s'" % SWARMUP_REGISTRY_URL)
 
         command.append("--username")
         command.append(SWARMUP_REGISTRY_USER)
-        print(" - User %s" % SWARMUP_REGISTRY_USER)
+
+        print("User: '%s'" % SWARMUP_REGISTRY_USER)
 
         command.append("--password-stdin")
         process = Popen(command, stdout=PIPE, stdin=PIPE, stderr=PIPE)
         stdout, stderr = process.communicate(input=bytes(SWARMUP_REGISTRY_PASSWORD, 'utf-8'))
 
         if process.returncode == 0:
-            print("\n Result: " + stdout.decode("utf-8"))
+            print(stdout.decode("utf-8").rstrip())
 
         if process.returncode == 1:
             sys.exit(stderr.decode("utf-8"))
 
     else:
-        print(" We dont login to registry")
+        print("We don't need to login to the registry")
 
 
 def find_service_config(client, prefix):
@@ -84,7 +81,7 @@ def find_service_config(client, prefix):
     return result
 
 
-def update_service_config(service_id, remove_config, config_name, config_path):
+def update_service_config(service, remove_config, config_name, config_path):
     command = ["docker", "service", "update"]
 
     if (remove_config):
@@ -94,28 +91,30 @@ def update_service_config(service_id, remove_config, config_name, config_path):
     command.append("--config-add")
     command.append("source=%s,target=%s" % (config_name, config_path))
 
-    command.append(service_id)
+    command.append(service.id)
+
+    log_service(service, ' '.join(command))
 
     process = Popen(command, stdout=PIPE, stderr=PIPE)
     stdout, stderr = process.communicate()
 
     if process.returncode == 0:
-        print("\n Result: " + stdout.decode("utf-8"))
+        debug_service(service, stdout.decode("utf-8").rstrip())
 
     if process.returncode == 1:
-        sys.exit(stderr.decode("utf-8"))
+        exception_service(service, stderr.decode("utf-8").rstrip())
 
 
-def update_service_image(service_id, image_uri):
+def update_service_image(service, image_uri):
     command = ["docker", "service", "update"]
 
-    if SWARMUP_REGISTRY_USER and SWARMUP_REGISTRY_PASSWORD:
+    if SWARMUP_WITH_REGISTRY_AUTH or (SWARMUP_REGISTRY_USER and SWARMUP_REGISTRY_PASSWORD):
         command.append("--with-registry-auth")
 
-    if SWARMUP_DETACH_OPTION:
+    if SWARMUP_DETACH:
         command.append("--detach=false")
 
-    if SWARMUP_INSECURE_REGISTRY:
+    if SWARMUP_INSECURE:
         command.append("--insecure")
 
     if SWARMUP_NO_RESOLVE_IMAGE:
@@ -123,23 +122,23 @@ def update_service_image(service_id, image_uri):
 
     command.append("--image")
     command.append(image_uri)
-    command.append(service_id)
+    command.append(service.id)
+
+    log_service(service, ' '.join(command))
 
     process = Popen(command, stdout=PIPE, stderr=PIPE)
     stdout, stderr = process.communicate()
 
     if process.returncode == 0:
-        debug("\n Result: " + stdout.decode("utf-8"))
+        debug_service(service, stdout.decode("utf-8").rstrip())
 
     if process.returncode == 1:
-        sys.exit(stderr.decode("utf-8"))
+        exception_service(service, stderr.decode("utf-8").rstrip())
 
 
 def process_configs(service_id):
     client = docker.from_env()
     service = client.services.get(service_id)
-
-    service_id = service.id
     service_labels = service.attrs['Spec']['Labels']
 
     label_found = False
@@ -173,7 +172,7 @@ def process_configs(service_id):
 
                 resolution = {
                     "action": 'add',
-                    "service_id": service_id,
+                    "service": service,
                     "config_name": swarm_config_name,
                     "config_path": label_config_path,
                     "remove_config": None
@@ -206,30 +205,35 @@ def process_configs(service_id):
                 # Resolve resolution
 
                 if resolution['action'] == 'add':
-                    log_service(service, "add config %s as %s" % (resolution['config_name'], resolution['config_path']))
+                    log_service(service, "New config '%s' found" % (resolution['config_name']))
+                    log_service(service, "Add config '%s' at %s" % (resolution['config_name'], resolution['config_path']))
                     update_service_config(
-                        resolution['service_id'],
+                        resolution['service'],
                         resolution['remove_config'],
                         resolution['config_name'],
                         resolution['config_path']
                     )
+                    log_service(service, "Config '%s' added!" % resolution['config_name'])
+
                 if resolution['action'] == 'update':
-                    log_service(service,
-                                "update config %s as %s" % (resolution['config_name'], resolution['config_path']))
+                    log_service(service, "Config '%s' updates found" % (resolution['config_name']))
+                    log_service(service, "Update config '%s' at %s" % (resolution['config_name'], resolution['config_path']))
                     update_service_config(
-                        resolution['service_id'],
+                        resolution['service'],
                         resolution['remove_config'],
                         resolution['config_name'],
                         resolution['config_path']
                     )
+                    log_service(service, "Config '%s' updated!" % resolution['config_name'])
+
                 if resolution['action'] == 'none':
-                    log_service(service, "bypass config")
+                    log_service(service, "No config updates found!")
 
             else:
-                exception_service(service, "Unknown config %s" % label_config_prefix)
+                exception_service(service, "The config with the name '%s' does not exist" % label_config_prefix)
 
     if not label_found:
-        debug(service, "Label %s.* not found!" % SWARMUP_CONFIG_LABEL)
+        debug_service(service, "Label %s.* not found!" % SWARMUP_CONFIG_LABEL)
 
 
 def process_image(service_id):
@@ -242,10 +246,8 @@ def process_image(service_id):
     label_found = False
 
     for label_key, label_value in service_labels.items():
-
         if label_key.startswith(SWARMUP_IMAGE_LABEL):
             label_found = True
-            debug(" - Label %s was found!" % SWARMUP_IMAGE_LABEL)
 
     if label_found:
 
@@ -263,12 +265,13 @@ def process_image(service_id):
         if len(service_image_with_hash) == 2:
             service_image_sha = service_image_with_hash[1]
 
-        debug(" - service_image_uri: " + service_image_uri)
-        debug(" - service_image_tag: " + service_image_tag)
-        debug(" - service_image_sha: " + service_image_sha)
+        # log_service(service, "service_image_uri: " + service_image_uri)
+        # log_service(service, "service_image_tag: " + service_image_tag)
+        # log_service(service, "service_image_sha: " + service_image_sha)
 
         # Pull new image
         debug(" - Puling latest image...")
+
         try:
             client.images.pull(service_image_uri, service_image_tag)
         except Exception as ex:
@@ -281,19 +284,21 @@ def process_image(service_id):
 
         # Update image?
         if service_image_sha != swarm_image_sha:
-            log_service(service, 'Update image to ' + swarm_image_update_uri + "\n")
-            update_service_image(service_id, swarm_image_update_uri)
+            log_service(service, 'Update found!')
+            log_service(service, 'Update image to ' + swarm_image_update_uri)
+            update_service_image(service, swarm_image_update_uri)
+            log_service(service, 'Updated!')
         else:
-            log_service(service, 'Newest image not found!\n')
+            log_service(service, 'No image updates found!')
 
         debug("-" * 100)
     else:
-        debug(service, "Label %s not found!" % SWARMUP_IMAGE_LABEL)
+        debug_service(service, "Label %s not found!" % SWARMUP_IMAGE_LABEL)
 
 
 # Common
 SWARMUP_DEBUG = os.getenv("SWARMUP_DEBUG", None)
-SWARMUP_TIMEOUT = os.getenv("SWARMUP_TIMEOUT", 30 * 1)
+SWARMUP_TIMEOUT = os.getenv("SWARMUP_TIMEOUT", 10 * 1)
 SWARMUP_CONFIG_LABEL = os.getenv("SWARMUP_CONFIG_LABEL", "swarmup.config")
 SWARMUP_IMAGE_LABEL = os.getenv("SWARMUP_IMAGE_LABEL", "swarmup.image")
 
@@ -301,81 +306,101 @@ SWARMUP_IMAGE_LABEL = os.getenv("SWARMUP_IMAGE_LABEL", "swarmup.image")
 SWARMUP_REGISTRY_URL = os.getenv("SWARMUP_REGISTRY_URL", None)
 SWARMUP_REGISTRY_USER = os.getenv("SWARMUP_REGISTRY_USER", None)
 SWARMUP_REGISTRY_PASSWORD = os.getenv("SWARMUP_REGISTRY_PASSWORD", None)
+SWARMUP_WITH_REGISTRY_AUTH = os.getenv("SWARMUP_WITH_REGISTRY_AUTH", None)
 
 # Update settings
-SWARMUP_DETACH_OPTION = os.getenv("SWARMUP_DETACH_OPTION", None)
-SWARMUP_INSECURE_REGISTRY = os.getenv("SWARMUP_INSECURE_REGISTRY", None)
+SWARMUP_DETACH = os.getenv("SWARMUP_DETACH", None)
+SWARMUP_INSECURE = os.getenv("SWARMUP_INSECURE", None)
 SWARMUP_NO_RESOLVE_IMAGE = os.getenv("SWARMUP_NO_RESOLVE_IMAGE", None)
 
 
 def main():
+    print("# STARTUP VARIABLES")
     print("-" * 100)
-    print("STARTUP VARIABLES")
-    print("-" * 100)
-    print("")
-    print("SWARMUP_TIMEOUT %s" % SWARMUP_TIMEOUT)
-    print("SWARMUP_CONFIG_LABEL %s" % SWARMUP_CONFIG_LABEL)
-    print("SWARMUP_IMAGE_LABEL %s" % SWARMUP_IMAGE_LABEL)
-    print("SWARMUP_REGISTRY_URL %s" % SWARMUP_REGISTRY_URL)
-    print("SWARMUP_REGISTRY_USER %s" % SWARMUP_REGISTRY_USER)
-    print("SWARMUP_REGISTRY_PASSWORD %s" % SWARMUP_REGISTRY_PASSWORD)
-    print("SWARMUP_DETACH_OPTION %s" % SWARMUP_DETACH_OPTION)
-    print("SWARMUP_INSECURE_REGISTRY %s" % SWARMUP_INSECURE_REGISTRY)
-    print("SWARMUP_NO_RESOLVE_IMAGE %s" % SWARMUP_NO_RESOLVE_IMAGE)
+    print("# SWARMUP_TIMEOUT: %s" % SWARMUP_TIMEOUT)
+    print("# SWARMUP_CONFIG_LABEL: %s" % SWARMUP_CONFIG_LABEL)
+    print("# SWARMUP_IMAGE_LABEL: %s" % SWARMUP_IMAGE_LABEL)
+    print("# SWARMUP_REGISTRY_URL: %s" % SWARMUP_REGISTRY_URL)
+    print("# SWARMUP_REGISTRY_USER: %s" % SWARMUP_REGISTRY_USER)
+    print("# SWARMUP_REGISTRY_PASSWORD: %s" % SWARMUP_REGISTRY_PASSWORD)
+    print("# SWARMUP_WITH_REGISTRY_AUTH: %s" % SWARMUP_WITH_REGISTRY_AUTH)
+    print("# SWARMUP_DETACH: %s" % SWARMUP_DETACH)
+    print("# SWARMUP_INSECURE: %s" % SWARMUP_INSECURE)
+    print("# SWARMUP_NO_RESOLVE_IMAGE: %s" % SWARMUP_NO_RESOLVE_IMAGE)
 
     while (True):
+
         print("")
-        print("@" * 100)
-        print("@ START NEW CICLE")
-        print("@" * 100)
+        print("# START NEW CYCLE")
+        print("-" * 100)
+
         print("")
+        print("## LOGIN TO REGISTRY")
+        print("-" * 100)
 
         login_to_registry()
 
         client = docker.from_env()
 
-        print("# START UPDATE PROCESS...")
+        print("")
+        print("## SEARCH SERVICES...")
         print("-" * 100)
+
         services_images = []
         services_configs = []
         for service in client.services.list():
-            print("## Service %s" % service.name)
+            # print("## Service %s" % service.name)
             for label_key, label_value in service.attrs['Spec']['Labels'].items():
                 if label_key.startswith(SWARMUP_IMAGE_LABEL):
                     services_images.append(service.id)
-                    print(" - Image Label %s was found!" % SWARMUP_IMAGE_LABEL)
+                    log_service(service, "Service with the label '%s' found" % label_key)
                 if label_key.startswith(SWARMUP_CONFIG_LABEL + "."):
                     services_configs.append(service.id)
-                    print(" - Config Label %s was found!" % SWARMUP_IMAGE_LABEL)
+                    log_service(service, "Service with the label '%s.xxx' found" % label_key)
 
             services_images = list(dict.fromkeys(services_images))
             services_configs = list(dict.fromkeys(services_configs))
 
-        print("\n")
-        print("# OUTPUT IMAGES...")
+        if len(services_images) == 0:
+            print("Services with the label '%s' were not found" % SWARMUP_IMAGE_LABEL)
+
+        if len(services_configs) == 0:
+            print("Services with the label '%s.xxx' were not found" % SWARMUP_CONFIG_LABEL)
+
+        print("")
+        print("## PROCESS IMAGES...")
         print("-" * 100)
 
-        pool_images = Pool()
+        if len(services_images):
 
-        for service_id in services_images:
-            pool_images.apply_async(process_image, (service_id,))
+            pool_images = Pool()
 
-        pool_images.close()
-        pool_images.join()
-        pool_images.terminate()
+            for service_id in services_images:
+                pool_images.apply_async(process_image, (service_id,))
 
-        print("\n")
-        print("# OUTPUT CONFIGS...")
+            pool_images.close()
+            pool_images.join()
+            pool_images.terminate()
+        else:
+            print("There are no services with a label '%s'" % SWARMUP_IMAGE_LABEL)
+
+        print("")
+        print("## PROCESS CONFIGS...")
         print("-" * 100)
 
-        pool_configs = Pool()
-        for service_id in services_configs:
-            pool_configs.apply_async(process_configs, (service_id,))
+        if len(services_configs):
+            pool_configs = Pool()
+            for service_id in services_configs:
+                pool_configs.apply_async(process_configs, (service_id,))
 
-        pool_configs.close()
-        pool_configs.join()
-        pool_configs.terminate()
+            pool_configs.close()
+            pool_configs.join()
+            pool_configs.terminate()
+        else:
+            print("There are no services with a label '%s.xxx'" % SWARMUP_CONFIG_LABEL)
 
+        print("")
+        print("Timeout for %d seconds" % int(SWARMUP_TIMEOUT))
         time.sleep(int(SWARMUP_TIMEOUT))
 
 
