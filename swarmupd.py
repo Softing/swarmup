@@ -246,7 +246,6 @@ def process_configs(service_id):
 
 
 def parse_image_uri(uri):
-
     image_uri = None
     image_tag = 'latest'
     image_sha = None
@@ -262,20 +261,24 @@ def parse_image_uri(uri):
 
     return [image_uri, image_tag, image_sha]
 
+
 def process_image(service_id):
     try:
         client = docker.from_env()
-        service = client.services.get(service_id)
 
-        si_uri, si_tag, si_sha = parse_image_uri(service.attrs['Spec']['TaskTemplate']['ContainerSpec']['Image'])
+        # Get service image
+        service = client.services.get(service_id)
+        serv_uri, serv_tag, serv_sha = parse_image_uri(service.attrs['Spec']['TaskTemplate']['ContainerSpec']['Image'])
 
         # Pull new image
-        pull_image = client.images.pull(si_uri, si_tag)
-        pi_uri, pi_tag, pi_sha = parse_image_uri(pull_image.attrs['RepoDigests'][0])
+        regi_request = "%s:%s" % (serv_uri, serv_tag)
+        regi_image = client.images.get_registry_data(regi_request)
+        regi_response = "%s@%s" % (regi_image.image_name, regi_image.attrs['Descriptor']['digest'])
+        regi_uri, regi_tag, regi_sha = parse_image_uri(regi_response)
 
         # Update image?
-        if si_sha != pi_sha:
-            image_update_uri = '%s:%s' % (pi_uri, si_tag)
+        if serv_sha != regi_sha:
+            image_update_uri = '%s:%s@%s' % (regi_uri, regi_tag, regi_sha)
             log_service(service, 'Update found!')
             log_service(service, 'Update image to ' + image_update_uri)
             update_service_image(service, image_update_uri)
